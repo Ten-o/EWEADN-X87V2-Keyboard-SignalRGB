@@ -1,5 +1,5 @@
 /*
-	前行者 (EWEADN) X87 V2 — SignalRGB 逐键灯光插件
+	前行者 (EWEADN) X87 V2 键盘 — SignalRGB 逐键灯光插件
 
 	协议逆向自官方 WebHID Hub 与 @hfd-sdk/keyboard-sdk 2.0.2。
 	键盘方案：华奋达 (huafenda)，keyboardType = huafenda87。

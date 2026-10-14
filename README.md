@@ -1,6 +1,6 @@
-# 前行者 (EWEADN) X87 V2 — SignalRGB 插件
+# 前行者 (EWEADN) X87 V2 键盘 — SignalRGB 插件
 
-把 X87 V2 接到 SignalRGB 的画布上做逐键灯光，有线 / 2.4G 两条链路都支持。
+把 X87 V2 键盘接到 SignalRGB 的画布上做逐键灯光，有线 / 2.4G 两条链路都支持。
 87 颗灯逐键可控，只发画面真正变化的包，退出时交还灯光（不会僵在最后一帧）。
 协议逆向自官方 WebHID Hub，没抓过 USB 包。
 
@@ -17,7 +17,8 @@
 ## 安装
 
 把 `EWEADN X87 V2.js` 复制到 `%USERPROFILE%\Documents\WhirlwindFX\Plugins\`
-（也可以在 SignalRGB 里 **设置 → 插件 → 打开插件文件夹**），重启 SignalRGB，然后把它拖到画布上。
+（也可以在 SignalRGB 里 **设置 → 插件 → 打开插件文件夹**），重启 SignalRGB，
+键盘会出现在设备列表里，把它拖到画布上即可。
 
 ## 设置
 
