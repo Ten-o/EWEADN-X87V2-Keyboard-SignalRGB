@@ -18,11 +18,7 @@
 
 [![点击此处将此仓库添加到 SignalRGB](https://github.com/qiangqiang101/SignalRGB-Wallpaper-Engine/blob/main/addtosrgbgithub.png?raw=true)](https://go.signalrgb.com/app/addon/install?url=https://github.com/Ten-o/EWEADN-X87V2-Keyboard-SignalRGB) | 
 
-点击按钮，在弹出的窗口里确认即可。也可以按 `Win + R`，粘贴：
-
-```
-signalrgb://addon/install?url=https://github.com/Ten-o/EWEADN-X87V2-Keyboard-SignalRGB
-```
+点击按钮，在弹出的窗口里确认即可。
 
 **手动安装：** 在 SignalRGB 里 **设置 → 插件 → 打开插件文件夹**，把 `EWEADN X87 V2.js` 复制进去。
 通常是 `%USERPROFILE%\Documents\WhirlwindFX\Plugins\`，重定向过文档目录的电脑会使用其他路径。重启 SignalRGB，
