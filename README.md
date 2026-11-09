@@ -20,10 +20,6 @@
 
 点击按钮，在弹出的窗口里确认即可。
 
-**手动安装：** 在 SignalRGB 里 **设置 → 插件 → 打开插件文件夹**，把 `EWEADN X87 V2.js` 复制进去。
-通常是 `%USERPROFILE%\Documents\WhirlwindFX\Plugins\`，重定向过文档目录的电脑会使用其他路径。重启 SignalRGB，
-键盘会出现在设备列表里，把它拖到画布上即可。
-
 ## 设置
 
 **灯光**
