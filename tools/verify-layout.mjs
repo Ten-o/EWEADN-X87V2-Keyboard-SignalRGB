@@ -18,7 +18,7 @@ const canvas = new Map();
 
 globalThis.device = {
 	log: (m) => console.log("    [log] " + m),
-	write: (p) => { written.push(Array.prototype.slice.call(p)); },
+	write: (p, size) => { written.push(Array.prototype.slice.call(p)); return size; },
 	read: (buf) => buf,
 	pause: () => {},
 	color: (x, y) => canvas.get(x + "," + y) || [0, 0, 0],
@@ -85,7 +85,7 @@ for (let i = 0; i < names.length; i++) {
 	canvas.set(positions[i][0] + "," + positions[i][1], [255, 255, 255]);
 
 	written = [];
-	await sleep(20);          // 越过限帧
+	await sleep(110);         // 2.4G 最多 10fps，包括旧版保存的 60fps 设置
 	mod.Render();
 
 	// 把这一帧的 cmd 0x24 包拼回 512 字节

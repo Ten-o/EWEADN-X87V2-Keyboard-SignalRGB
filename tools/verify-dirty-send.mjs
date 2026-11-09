@@ -1,11 +1,11 @@
-// 验证「只发变化的数据」这一优化，同样不需要键盘。
+// 验证整帧去重：画面静止时跳过，有变化时保持完整分包顺序。不需要键盘。
 //
 //   node tools/verify-dirty-send.mjs
 //
 // 断言：
 //   1. 第一帧必须全量（10 个包）—— 设备缓冲里原本有什么，插件无从得知
 //   2. 画面完全没变的下一帧，一个包都不发
-//   3. 只改一颗灯，只发「它所在的那个窗口 + 末包」
+//   3. 只改一颗灯，也必须从偏移 0 开始发送完整帧
 //   4. 末包永远带末包标志（设备靠它判定传输结束）
 //   5. DirtySend = Off (Full Frame) 时退回全量
 
@@ -20,7 +20,7 @@ const canvas = new Map();
 
 globalThis.device = {
 	log: () => {},
-	write: (p) => { packets.push(Array.prototype.slice.call(p)); },
+	write: (p, size) => { packets.push(Array.prototype.slice.call(p)); return size; },
 	read: (b) => b,
 	pause: (ms) => { pauses.push(ms); },
 	color: (x, y) => canvas.get(x + "," + y) || [0, 0, 0],
@@ -67,7 +67,7 @@ function paintAll(rgb, extra) {
 async function frame() {
 	packets = [];
 	pauses = [];
-	await sleep(40);          // 越过限帧（60fps = 17ms）
+	await sleep(120);         // 旧设置 60fps 也受 2.4G 的 10fps 上限约束
 	mod.Render();
 	return packets;
 }
@@ -105,21 +105,20 @@ if (d.length === 0) ok("零包 —— 整帧被跳过");
 else bad("应当 0 包，实际 " + d.length);
 
 console.log("");
-console.log("=== 3. 只改一颗灯：只发它所在窗口 + 末包 ===");
+console.log("=== 3. 只改一颗灯：仍发送完整帧 ===");
 const target = names.indexOf("PageDown");
 if (target < 0) {
 	bad("没找到 PageDown");
 } else {
 	const slot = 108;                       // PageDown 的槽位
-	const wantChunk = Math.floor((slot * 4) / 56);
 	paintAll([255, 0, 0], { i: target, rgb: [0, 255, 0] });
 	d = describe(await frame());
 	console.log("  改「" + names[target] + "」(槽 " + slot + ")，发出 " +
 		d.length + " 个包: " + d.map((x) => x.addr + "+" + x.len).join(", "));
-	if (d.length === 2) ok("只发 2 包，不是 10 包");
-	else bad("应为 2 包（窗口 " + wantChunk + " + 末包），实际 " + d.length);
-	if (d.length && Math.floor(d[0].addr / 56) === wantChunk) ok("第一包正是它所在的窗口 " + wantChunk);
-	else bad("第一包窗口不对: " + (d.length ? Math.floor(d[0].addr / 56) : "无"));
+	if (d.length === 10) ok("完整 10 包");
+	else bad("应为 10 包，实际 " + d.length);
+	if (d.every((p, i) => p.addr === i * 56)) ok("从偏移 0 开始，连续发送全部窗口");
+	else bad("分包地址不连续");
 	if (d.length && d[d.length - 1].last) ok("末包仍带末包标志");
 	else bad("末包没带标志");
 }
@@ -140,15 +139,14 @@ else bad("应为 10 包，实际 " + d.length);
 globalThis.DirtySend = "On";
 
 console.log("");
-console.log("=== 6. 包间停顿是否按预算摊开 ===");
+console.log("=== 6. 包间停顿不会因高帧率消失 ===");
 paintAll([0, 0, 255]);
 packets = []; pauses = [];
-await sleep(40);
+await sleep(120);
 mod.Render();
-console.log("  全量帧停顿: [" + pauses.join(", ") + "] ms（限 " +
-	Math.round(1000 / 60) + " ms/帧，单次上限 6 ms）");
-if (pauses.every((ms) => ms <= 6)) ok("停顿没超过上限");
-else bad("停顿超上限: " + pauses.join(","));
+console.log("  全量帧停顿: [" + pauses.join(", ") + "] ms");
+if (pauses.length >= 9 && pauses.every((ms) => ms > 0 && ms <= 8)) ok("每个相邻包间有停顿");
+else bad("包间停顿不正确: " + pauses.join(","));
 
 console.log("");
 console.log(fail === 0 ? "全部通过 ✓" : fail + " 项不通过 ✗");

@@ -1,7 +1,7 @@
 # 前行者 (EWEADN) X87 V2 键盘 — SignalRGB 插件
 
 把 X87 V2 键盘接到 SignalRGB 的画布上做逐键灯光，有线 / 2.4G 两条链路都支持。
-87 颗灯逐键可控，只发画面真正变化的包，退出时交还灯光（不会僵在最后一帧）。
+87 颗灯逐键可控，静止画面跳过发送，画面变化时按顺序发送完整帧，正常退出时尝试交还灯光。
 协议逆向自官方 WebHID Hub，没抓过 USB 包。
 
 ## 支持的设备
@@ -16,8 +16,8 @@
 
 ## 安装
 
-把 `EWEADN X87 V2.js` 复制到 `%USERPROFILE%\Documents\WhirlwindFX\Plugins\`
-（也可以在 SignalRGB 里 **设置 → 插件 → 打开插件文件夹**），重启 SignalRGB，
+在 SignalRGB 里 **设置 → 插件 → 打开插件文件夹**，把 `EWEADN X87 V2.js` 复制进去。
+通常是 `%USERPROFILE%\Documents\WhirlwindFX\Plugins\`，重定向过文档目录的电脑会使用其他路径。重启 SignalRGB，
 键盘会出现在设备列表里，把它拖到画布上即可。
 
 ## 设置
@@ -41,29 +41,42 @@
 
 | 设置 | 默认 | 说明 |
 |---|---|---|
-| Frame Rate Limit (fps) | `20` | 插件自己限帧。2.4G 接收器吃不下 60fps × 10 个包，调高会开始丢包 |
-| Send Only Changed Data | `On` | 只发变化的包；切 `Off` 则每帧整发，个别固件不认局部更新时用 |
-| Reapply Mode Every (s) | `15` | 定期重发「进自定义通道」，防止键盘自己切回内置灯效；`0` = 关闭 |
+| Frame Rate Limit (fps) | `10` | 2.4G 和有线 `Profile (0x24)` 最多 10fps；有线 `Realtime (0x32)` 最多 20fps。旧版保存的 60fps 也受限制 |
+| Skip Unchanged Frames | `On` | 静止时不发包；画面变化时发送完整帧。`Off (Full Frame)` 每帧都发，不再跳过中间分包 |
+| Reapply Mode Every (s) | `0` | 默认关闭周期性模式重写；调整亮度、模式或通道时仍会更新。非零值仅用于排查键盘自行退出自定义通道 |
+| Wired Write Mode | `Profile (0x24)` | 默认使用原厂自定义灯光命令；`Realtime (0x32)` 保留作对照，持续使用的固件兼容性需要实机验证 |
 
-其余几项（Device Lighting Mode / Brightness / Wired Write Mode / 2.4G Channel / Music Amplitude）
+其余几项（Device Lighting Mode / Brightness / 2.4G Channel / Music Amplitude）
 只在不同固件版本上排查时才有意义。
+
+**从旧版升级**：SignalRGB 可能保留旧参数，请手动设置 `Reapply Mode Every = 0`、
+`Frame Rate Limit = 10`、`Skip Unchanged Frames = On`；有线使用 `Profile (0x24)`，
+2.4G 使用 `Custom Area (0x24 / 36)`。默认值变化不会自动清除已保存的设置。
+
+插件对有线保留至少 5ms、2.4G 至少 8ms 的包间静默，切换模式后等待 30ms。
+这些间隔是保守的排查设置，不能替代设备应答。写入返回 65 字节也仅说明主机完成写入，
+不代表键盘固件已处理成功。
 
 ## 排查
 
-- **灯只亮一小片 / 卡顿 / 闪** —— 把 Frame Rate Limit 降到 10–15。日志里 `包 X.X/帧` 稳态下应远小于 10。
-- **退出后键盘不回原样** —— SignalRGB 只有 `Shutdown()` 一个退出钩子，**强杀进程**时不会被调用。想要保险就把 Hand Back To Keyboard 设成 `Built-in Effect`。
-- **日志写「原灯效读取无应答」** —— 正常。这块键盘没有 feature report，读不回原灯效就直接用你选的内置灯效收尾。
+- **灯光卡死，原厂软件也调不了** —— 先从托盘正常退出 SignalRGB，再单独打开原厂软件，避免两个程序同时写灯光。仍不恢复时，拔掉 USB、关闭键盘电源，再重新连接；如果有线和接收器都插着，先只保留当前使用的链路。确认恢复后再按升级设置试用修复版。
+- **灯只亮一小片 / 卡顿 / 闪** —— 把 Frame Rate Limit 降到 5–10。有变化的自定义帧固定 10 包，静止画面才是零包。
+- **日志写「发送失败」** —— 插件会中止该帧，等待 1 秒、2 秒后重试；连续三次失败停止发送。请保留包含 `cmd`、`addr`、`write` 或异常码的日志。恢复连接后禁用再启用设备，或重启 SignalRGB。
+- **退出后键盘不回原样** —— **强杀进程**不会调用 `Shutdown()`。正常退出会尝试还原；已卡死的固件也可能不响应还原命令。`Built-in Effect` 仅选择还原内容，不能保证故障时一定成功。
+- **日志写「原灯效读取无应答」** —— 输入报告在插件中可能不可读或已被宿主读取；没有 feature report 本身不代表没有输入报告。读不回时用选定的内置灯效收尾。
 - **调了颜色没反应** —— 先用 `Forced` 模式确认链路通不通。
 
 ## 测试
 
 ```bash
 node tools/verify-layout.mjs      # 键位表、槽位唯一性、坐标范围、与真机对照表比对
-node tools/verify-dirty-send.mjs  # 增量发送：首帧全量、静止帧零包、单键变更只发 2 包
+node tools/verify-dirty-send.mjs  # 整帧去重：首帧全量、静止帧零包、单键变更完整 10 包
+node tools/verify-transport.mjs   # 分包顺序、包间静默、短写/异常中止、失败退避和退出恢复
 ```
 
-两个脚本都在 Node 里直接加载插件本体、用桩替换掉 `device`，**不需要键盘，也不需要启动 SignalRGB**。
+三个脚本都在 Node 里加载插件本体、用桩替换掉 `device`，**不需要键盘，也不需要启动 SignalRGB**。
 改完插件跑一遍，都应该是 `全部通过 ✓`。
+这些测试验证发送逻辑，不能证明实机固件不会卡死；还需要在实际连接方式下验证动态灯效和退出后的原厂控制。
 
 ## 备注
 

@@ -36,7 +36,7 @@
 
 	逐键数据走 cmd 0x24 SET_CUSTOM_LED_DATA：512 字节 = 128 组 [槽位, R, G, B]，
 	**数组下标就是槽位**（SDK 传的 ledId 字段被它自己的写入端丢弃，是个幌子）。每包
-	56 字节，末包打末包标志。因为地址是按字节偏移寻址的，所以可以只发变化的那几个窗口。
+	56 字节，末包打末包标志。地址字段不能证明固件支持跳过中间包；有变化时发送完整帧。
 
 	两个备用通道（默认不用，见 WirelessChannel 设置）：
 	  cmd 0x3C  RGB565 大端，每灯 2 字节，数组下标即灯位，每包 56 字节
@@ -70,15 +70,15 @@ export function ControllableParameters() {
 		{ "property": "ExitBrightness", "group": "on exit", "label": "Exit Brightness (1-5)", "min": "1", "max": "5", "type": "number", "default": "5" },
 		{ "property": "ExitSpeed", "group": "on exit", "label": "Exit Speed (1-5)", "min": "1", "max": "5", "type": "number", "default": "5" },
 
-		{ "property": "WriteMode", "group": "device", "label": "Wired Write Mode", "type": "combobox", "values": ["Realtime (0x32)", "Profile (0x24)"], "default": "Realtime (0x32)" },
+		{ "property": "WriteMode", "group": "device", "label": "Wired Write Mode", "type": "combobox", "values": ["Realtime (0x32)", "Profile (0x24)"], "default": "Profile (0x24)" },
 		{ "property": "WirelessChannel", "group": "device", "label": "2.4G Channel", "type": "combobox", "values": ["Custom Area (0x24 / 36)", "Music 24G 64B (0x3C / 60)", "Music (0x35 / 53)"], "default": "Custom Area (0x24 / 36)" },
 		{ "property": "SendModeCommand", "group": "device", "label": "Send Custom-Mode Command", "type": "combobox", "values": ["On", "Off"], "default": "On" },
 		{ "property": "DeviceMode", "group": "device", "label": "Device Lighting Mode", "type": "combobox", "values": ["0x80 (128)", "20"], "default": "0x80 (128)" },
 		{ "property": "Brightness", "group": "device", "label": "Brightness (1-5)", "min": "1", "max": "5", "type": "number", "default": "5" },
 		{ "property": "Amplitude", "group": "device", "label": "Music Channel Amplitude (0-7)", "min": "0", "max": "7", "type": "number", "default": "5" },
-		{ "property": "ReapplySeconds", "group": "device", "label": "Reapply Mode Every (s, 0=off)", "min": "0", "max": "600", "type": "number", "default": "15" },
-		{ "property": "FrameRate", "group": "device", "label": "Frame Rate Limit (fps)", "min": "5", "max": "60", "type": "number", "default": "20" },
-		{ "property": "DirtySend", "group": "device", "label": "Send Only Changed Data", "type": "combobox", "values": ["On", "Off (Full Frame)"], "default": "On" }
+		{ "property": "ReapplySeconds", "group": "device", "label": "Reapply Mode Every (s, 0=off)", "min": "0", "max": "600", "type": "number", "default": "0" },
+		{ "property": "FrameRate", "group": "device", "label": "Frame Rate Limit (fps)", "min": "5", "max": "20", "type": "number", "default": "10" },
+		{ "property": "DirtySend", "group": "device", "label": "Skip Unchanged Frames", "type": "combobox", "values": ["On", "Off (Full Frame)"], "default": "On" }
 	];
 }
 
@@ -275,7 +275,6 @@ export function LedPositions() { return ledPositions; }
 /* ------------------------------------------------------------------ *
  *  状态
  * ------------------------------------------------------------------ */
-let loggedFailure = false;
 let savedEffect = null;         // 接管前的 16 字节灯效，读不到则为 null
 let restoreDone = false;
 let wireless = false;           // 当前实例是否挂在 2.4G 接收器上
@@ -283,24 +282,32 @@ let wireless = false;           // 当前实例是否挂在 2.4G 接收器上
 /* 节流与统计。
    SignalRGB 不管插件死活照 60fps 调 Render，照单全收地往下灌的话写会无限积压、全部
    挂 PENDING，最后句柄报 995 (ERROR_OPERATION_ABORTED)，键盘只被点亮一小片。
-   厂商 SDK 是靠「每个包都等一次应答」来背压的，这里没有那条路，只能自己限帧。 */
+   厂商 SDK 每包等待应答；SignalRGB 下插件不一定能读到应答，使用包间隔和失败退避。 */
 let nextFrameAt = 0;            // 限帧从帧首起算，见 Render()
 let nextReapplyAt = 0;
+let modeReady = false;
+let activeModeKey = null;
+let retryAt = 0;
+let consecutiveFailures = 0;
+let transportStopped = false;
+let lastWriteEndedAt = null;
 let sendFailures = 0;
 let framesSent = 0;
 let packetsSent = 0;            // 统计窗口内实际发出的包数
 let statsWindowAt = 0;
 
-/* 增量发送用的影子副本：cmd -> 上一帧真正发出去的完整内容。
+/* 整帧去重用的影子副本：cmd -> 上一帧主机完整写出的内容。
    没有条目 = 必须整帧重发（设备缓冲不可信：刚进自定义通道、刚重放 mode、上次有包失败）。*/
 const shadows = {};
 let shadowStream = null;        // cmd 0x35 专用：上一帧的 RGB565 流
 let shadowStreamValid = false;
 
-/* 包间停顿的上限（毫秒），见 packetGapMs() */
-const PACKET_GAP_MAX = 6;
+const PACKET_GAP_WIRED_MS = 5;
+const PACKET_GAP_WIRELESS_MS = 8;
+const MODE_SETTLE_MS = 30;
+const MAX_CONSECUTIVE_FAILURES = 3;
 
-/* writeMsTotal / writeCount 既是诊断数据，也是 packetGapMs() 的输入 */
+/* 写入耗时仅供诊断，不用于取消包间停顿。 */
 let writeMsTotal = 0, writeCount = 0;
 
 function nowMs() {
@@ -355,21 +362,39 @@ function clampAmplitude(v) {
 	return Math.max(0, Math.min(7, n));
 }
 
-function logOnce(msg) {
-	if (!loggedFailure) {
-		loggedFailure = true;
-		device.log(msg);
-	}
+function transportFailure(packet, reason) {
+	sendFailures++;
+	consecutiveFailures++;
+	invalidateShadows();
+	modeReady = false;
+	retryAt = Date.now() + 1000 * Math.pow(2, consecutiveFailures - 1);
+	transportStopped = consecutiveFailures >= MAX_CONSECUTIVE_FAILURES;
+	device.log("X87 V2: 发送失败 cmd=0x" + hex2(packet[2]) + " addr=" +
+		(packet[4] | (packet[5] << 8)) + " (" + reason + ")；" +
+		(transportStopped ? "已停止发送，请禁用后重新启用设备或重启 SignalRGB" : "暂停后重试"));
 }
 
 /* 发出一个 65 字节输出报告。本设备没有 feature report，必须用 write。 */
 function writeReport(packet) {
+	if (transportStopped || Date.now() < retryAt) return false;
+	// WriteFile 返回只表示主机完成写入，不能代表 MCU 已处理；慢写也不能替代包间静默。
+	if (lastWriteEndedAt !== null && typeof device.pause === "function") {
+		const gap = wireless ? PACKET_GAP_WIRELESS_MS : PACKET_GAP_WIRED_MS;
+		const remaining = Math.ceil(gap - (nowMs() - lastWriteEndedAt));
+		if (remaining > 0) device.pause(remaining);
+	}
 	const t0 = nowMs();
 	try {
-		device.write(packet, REPORT_SIZE);
+		const written = device.write(packet, REPORT_SIZE);
+		lastWriteEndedAt = nowMs();
+		// SignalRGB 返回写入字节数；兼容不返回数值的宿主。
+		if (written === false || (typeof written === "number" && written !== REPORT_SIZE)) {
+			transportFailure(packet, "write=" + written + "/" + REPORT_SIZE);
+			return false;
+		}
 	} catch (e) {
-		sendFailures++;
-		logOnce("X87 V2 发送失败: " + e);
+		lastWriteEndedAt = nowMs();
+		transportFailure(packet, String(e));
 		return false;
 	}
 
@@ -381,8 +406,10 @@ function writeReport(packet) {
 /* 限帧上限，毫秒/帧 */
 function frameIntervalMs() {
 	let fps = parseInt(FrameRate, 10);
-	if (!isFinite(fps) || fps < 1) fps = 20;
-	if (fps > 60) fps = 60;
+	if (!isFinite(fps) || fps < 1) fps = 10;
+	// 自定义区完整一帧为 10 包，旧版保存的 60fps 设置也必须受到限制。
+	const limit = (wireless || String(WriteMode) === "Profile (0x24)") ? 10 : 20;
+	fps = Math.min(fps, limit);
 	return Math.round(1000 / fps);
 }
 
@@ -394,19 +421,6 @@ function dirtyEnabled() {
 function invalidateShadows() {
 	for (const k in shadows) delete shadows[k];
 	shadowStreamValid = false;
-}
-
-/* 包间停顿不写死常数，而是把这一帧的时间预算摊到每个包上。
-   固定 2ms 的问题：单包写入只要 1ms 时它白吃掉整帧的一大半，单包写入真要 5ms 时它又
-   拦不住积压。现在改成「只有预算还有富余才补停顿」—— 写入本身的耗时已经是一种节流，
-   不重复等；有富余时就把这帧摊开，而不是一股脑塞进接收器的 OUT 队列（队列满了写就
-   不完成，最后整片报 995）。 */
-function packetGapMs(packets) {
-	const perPacket = frameIntervalMs() / Math.max(1, packets);
-	const w = writeCount > 0 ? (writeMsTotal / writeCount) : 0;
-	const gap = Math.round(perPacket - w);
-	if (gap <= 0) return 0;
-	return Math.min(PACKET_GAP_MAX, gap);
 }
 
 /* 每 5 秒往设备控制器日志里报一次实测帧率、每帧包数和发送失败数 */
@@ -482,58 +496,31 @@ function buildMusic53Packet(index, amplitude, payload) {
  * force = true 时忽略影子，整帧重发。
  */
 function sendContent(cmd, data, amplitude, force) {
+	if (transportStopped || Date.now() < retryAt) return false;
 	const total = data.length;
 	const packets = Math.max(1, Math.ceil(total / PAYLOAD_MAX));
 	const last = packets - 1;
 	const prev = shadows[cmd];
+	if (!force && dirtyEnabled() && prev && prev.length === total &&
+		data.every((value, i) => value === prev[i])) return true;
 
-	/* 协议本身按字节偏移寻址，所以只发内容真的变了的窗口就够了。厂商每次都发全量只是
-	   因为它不比较 —— 对我们那是每帧雷打不动的 10 个包，画面静止时也一样。 */
-	const dirty = [];
-	if (force || !dirtyEnabled() || !prev || prev.length !== total) {
-		for (let k = 0; k <= last; k++) dirty.push(k);
-	} else {
-		for (let k = 0; k <= last; k++) {
-			const a = k * PAYLOAD_MAX;
-			const e = Math.min(a + PAYLOAD_MAX, total);
-			for (let i = a; i < e; i++) {
-				if (data[i] !== prev[i]) { dirty.push(k); break; }
-			}
-		}
-		// 末包必须跟上：设备靠末包标志判定这一帧传输结束
-		if (dirty.length && dirty[dirty.length - 1] !== last) dirty.push(last);
-	}
-
-	if (!dirty.length) return;      // 整帧内容没变，一个包都不发
-
-	const gap = packetGapMs(dirty.length);
-	let sent = 0;
-
-	for (let n = 0; n < dirty.length; n++) {
-		const k = dirty[n];
+	// 与原厂完整分包顺序一致；跳过中间包的固件行为尚未验证。
+	for (let k = 0; k < packets; k++) {
 		const offset = k * PAYLOAD_MAX;
 		const end = Math.min(offset + PAYLOAD_MAX, total);
 
-		if (writeReport(buildPacket(
+		if (!writeReport(buildPacket(
 			cmd,
 			end - offset,
 			offset,
 			k === last,
 			data.slice(offset, end),
 			amplitude
-		))) {
-			sent++;
-			packetsSent++;
-		}
-
-		if (n < dirty.length - 1 && gap > 0 && typeof device.pause === "function") {
-			device.pause(gap);
-		}
+		))) return false; // 停在首个失败包，不能继续发送残帧或末包。
+		packetsSent++;
 	}
-
-	// 只有整批都成功，影子和设备缓冲才算一致；有一个失败就作废，下次整帧重来
-	if (sent === dirty.length) shadows[cmd] = data.slice();
-	else delete shadows[cmd];
+	shadows[cmd] = data.slice();
+	return true;
 }
 
 /* ------------------------------------------------------------------ *
@@ -596,7 +583,7 @@ function readOriginalEffect() {
 		else if (typeof device.clearReadBuffer === "function") device.clearReadBuffer();
 
 		const request = buildPacket(CMD_GET_LED_EFFECT, 16, 0, true, null, 0);
-		device.write(request, REPORT_SIZE);
+		if (!writeReport(request)) return null;
 		if (typeof device.pause === "function") device.pause(20);
 
 		const response = device.read(request, REPORT_SIZE, READ_TIMEOUT_MS);
@@ -613,7 +600,8 @@ function readOriginalEffect() {
 
 		const preview = hexPreview(response, 10);
 
-		if (!response || response.length < PAYLOAD_AT + 16) {
+		if (!response || response.length < PAYLOAD_AT + 16 ||
+			(readSize >= 0 && readSize < PAYLOAD_AT + 16)) {
 			device.log("X87 V2: 原灯效应答过短 (" + preview + ")，退出时写回内置灯效");
 			return null;
 		}
@@ -641,7 +629,10 @@ function readOriginalEffect() {
  *  进出设置：把键盘切到「逐键自定义」通道
  * ------------------------------------------------------------------ */
 function enterCustomMode() {
-	if (String(SendModeCommand) === "Off") return;
+	if (String(SendModeCommand) === "Off") {
+		invalidateShadows();
+		return true;
+	}
 
 	let mode = 128;
 	if (String(DeviceMode) === "20") mode = 20;
@@ -656,11 +647,24 @@ function enterCustomMode() {
 	payload[14] = 0xAA;       // 检测码
 	payload[15] = 0x55;
 
-	// 强制发：重放的意义就是「再喊一次」，被增量逻辑去重掉就白设了
-	sendContent(CMD_SET_LED_EFFECT, payload, 0, true);
+	// 模式切换必须实际写出，不能被整帧去重跳过。
+	if (!sendContent(CMD_SET_LED_EFFECT, payload, 0, true)) return false;
+	if (typeof device.pause === "function") device.pause(MODE_SETTLE_MS);
 
 	// 重新进自定义通道后，设备里的逐键缓冲不可再信 —— 作废影子，下一帧整帧重发
 	invalidateShadows();
+	return true;
+}
+
+function scheduleReapply(now) {
+	let seconds = parseInt(ReapplySeconds, 10);
+	if (!isFinite(seconds) || seconds < 0) seconds = 0;
+	nextReapplyAt = seconds === 0 ? Number.MAX_SAFE_INTEGER : now + seconds * 1000;
+}
+
+function modeKey() {
+	return [String(SendModeCommand), String(DeviceMode), String(Brightness),
+		String(WriteMode), String(WirelessChannel)].join("|");
 }
 
 /* 组装一个内置灯效的 16 字节 SET_LED_EFFECT 载荷 */
@@ -701,33 +705,35 @@ function exitEffectPayload() {
  *   Shutdown Color   -> 保持逐键通道，画成 shutdownColor
  */
 function restoreLighting() {
-	// 退出时一律整帧重发：这是「交还控制权」，不能因为内容和上一帧撞了就被增量逻辑吞掉
+	// 交还控制权时必须实际写出，不能被整帧去重跳过。
 	invalidateShadows();
 
 	const choice = String(ExitLighting);
 
 	if (choice === "Shutdown Color") {
-		pushFrame(true);
-		return;
+		return pushFrame(true);
 	}
 
 	if (choice === "Off") {
-		sendContent(CMD_SET_LED_EFFECT, buildEffectPayload(0x00, [0, 0, 0], 5, 5, 0), 0);
-		return;
+		return sendContent(CMD_SET_LED_EFFECT, buildEffectPayload(0x00, [0, 0, 0], 5, 5, 0), 0);
 	}
 
 	if (choice === "Restore Original" && savedEffect && !isNonRestorableMode(savedEffect[0])) {
-		sendContent(CMD_SET_LED_EFFECT, savedEffect, 0);
-		return;
+		return sendContent(CMD_SET_LED_EFFECT, savedEffect, 0);
 	}
 
-	sendContent(CMD_SET_LED_EFFECT, exitEffectPayload(), 0);
+	return sendContent(CMD_SET_LED_EFFECT, exitEffectPayload(), 0);
 }
 
 export function Initialize() {
-	loggedFailure = false;
 	restoreDone = false;
 	wireless = detectLink();
+	modeReady = false;
+	activeModeKey = null;
+	retryAt = 0;
+	consecutiveFailures = 0;
+	transportStopped = false;
+	lastWriteEndedAt = null;
 
 	nextFrameAt = 0;
 	nextReapplyAt = 0;
@@ -752,7 +758,9 @@ export function Initialize() {
 		"，自定义档 mode = " + String(DeviceMode));
 
 	savedEffect = readOriginalEffect();
-	enterCustomMode();
+	modeReady = enterCustomMode();
+	if (modeReady) activeModeKey = modeKey();
+	scheduleReapply(Date.now());
 }
 
 /* ------------------------------------------------------------------ *
@@ -803,18 +811,17 @@ function buildColorStream(shutdown) {
 
 /* cmd 0x35：每包固定 60 字节（末包补零），不设末包标志 */
 function sendMusic53(stream, amplitude) {
+	if (transportStopped || Date.now() < retryAt) return false;
 	/* 这条通道没有地址字段，局部更新无从谈起，只能整帧比一次：内容没变就整个跳过。 */
 	if (dirtyEnabled() && shadowStreamValid && shadowStream && shadowStream.length === stream.length) {
 		let same = true;
 		for (let i = 0; i < stream.length; i++) {
 			if (stream[i] !== shadowStream[i]) { same = false; break; }
 		}
-		if (same) return;
+		if (same) return true;
 	}
 
 	const packets = Math.max(1, Math.ceil(stream.length / MUSIC53_PAYLOAD_MAX));
-	const gap = packetGapMs(packets);
-	let sent = 0;
 
 	for (let k = 0; k < packets; k++) {
 		const offset = k * MUSIC53_PAYLOAD_MAX;
@@ -822,22 +829,13 @@ function sendMusic53(stream, amplitude) {
 		const chunk = stream.slice(offset, end);
 		while (chunk.length < MUSIC53_PAYLOAD_MAX) chunk.push(0);
 
-		if (writeReport(buildMusic53Packet(k, amplitude, chunk))) {
-			sent++;
-			packetsSent++;
-		}
-
-		if (k < packets - 1 && gap > 0 && typeof device.pause === "function") {
-			device.pause(gap);
-		}
+		if (!writeReport(buildMusic53Packet(k, amplitude, chunk))) return false;
+		packetsSent++;
 	}
 
-	if (sent === packets) {
-		shadowStream = stream.slice();
-		shadowStreamValid = true;
-	} else {
-		shadowStreamValid = false;
-	}
+	shadowStream = stream.slice();
+	shadowStreamValid = true;
+	return true;
 }
 
 /* 2.4G 通道：默认走自定义区 cmd 0x24（与 hub 灯光页一致），另两条为对照备选 */
@@ -853,49 +851,53 @@ function pushFrame(shutdown) {
 
 	if (!wireless) {
 		if (String(WriteMode) === "Profile (0x24)") {
-			sendContent(CMD_SET_CUSTOM_LED_DATA, buildLedData(shutdown), 0);
+			return sendContent(CMD_SET_CUSTOM_LED_DATA, buildLedData(shutdown), 0);
 		} else {
-			sendContent(CMD_GET_LED_DATA, buildLedData(shutdown), amplitude);
+			return sendContent(CMD_GET_LED_DATA, buildLedData(shutdown), amplitude);
 		}
-		return;
 	}
 
 	const channel = wirelessChannel();
 	if (channel === 0x3C) {
-		sendContent(CMD_SET_MUSIC_DATA_24G_64B, buildColorStream(shutdown), amplitude);
+		return sendContent(CMD_SET_MUSIC_DATA_24G_64B, buildColorStream(shutdown), amplitude);
 	} else if (channel === 0x35) {
-		sendMusic53(buildColorStream(shutdown), amplitude);
+		return sendMusic53(buildColorStream(shutdown), amplitude);
 	} else {
-		sendContent(CMD_SET_CUSTOM_LED_DATA, buildLedData(shutdown), 0);
+		return sendContent(CMD_SET_CUSTOM_LED_DATA, buildLedData(shutdown), 0);
 	}
 }
 
 export function Render() {
-	if (restoreDone) return;
+	if (restoreDone || transportStopped) return;
 
 	const now = Date.now();
 
-	// 自己限帧。间隔从帧「首」起算，周期才是 max(帧耗时, 间隔)；从帧尾起算会变成
-	// 「帧耗时 + 间隔」—— 设 60 实际只能拿到 20 出头，而且是静默少给。
-	if (now < nextFrameAt) return;
+	// 从帧首限制频率，帧尾另留最小静默时间。
+	if (now < nextFrameAt || now < retryAt) return;
 	nextFrameAt = now + frameIntervalMs();
 
 	// 定期重放「进自定义通道」，防止键盘自己切回内置灯效
-	if (now >= nextReapplyAt) {
-		enterCustomMode();
-
-		let seconds = parseInt(ReapplySeconds, 10);
-		if (!isFinite(seconds) || seconds < 0) seconds = 0;
-		nextReapplyAt = (seconds === 0) ? Number.MAX_SAFE_INTEGER : (now + seconds * 1000);
+	if (!modeReady || activeModeKey !== modeKey() || now >= nextReapplyAt) {
+		modeReady = enterCustomMode();
+		if (!modeReady) return;
+		activeModeKey = modeKey();
+		scheduleReapply(Date.now());
 	}
 
-	pushFrame(false);
+	if (pushFrame(false)) consecutiveFailures = 0;
+	// 慢帧结束后仍留出包间静默，避免下一次 Render 立即突发补发。
+	nextFrameAt = Math.max(nextFrameAt, Date.now() +
+		(wireless ? PACKET_GAP_WIRELESS_MS : PACKET_GAP_WIRED_MS));
 	logFrameStats(now);
 }
 
 export function Shutdown() {
+	if (restoreDone) return;
 	restoreDone = true;
-	restoreLighting();
+	// 即使发送已熔断，退出时仍允许尝试一次交还灯光；失败不循环重试。
+	transportStopped = false;
+	retryAt = 0;
+	if (restoreLighting() && typeof device.pause === "function") device.pause(MODE_SETTLE_MS);
 }
 
 export function Validate(endpoint) {
