@@ -16,7 +16,7 @@
 
 ## 安装
 
-[![Add To SignalRGB](https://marketplace.signalrgb.com/resources/add-extension-256.png "Add to My SignalRGB Installation")](signalrgb://addon/install?url=https://github.com/Ten-o/EWEADN-X87V2-Keyboard-SignalRGB)
+[![点击此处将此仓库添加到 SignalRGB](https://github.com/qiangqiang101/SignalRGB-Wallpaper-Engine/blob/main/addtosrgbgithub.png?raw=true)](https://go.signalrgb.com/app/addon/install?url=https://github.com/Ten-o/EWEADN-X87V2-Keyboard-SignalRGB) | 
 
 点击按钮，在弹出的窗口里确认即可。也可以按 `Win + R`，粘贴：
 
