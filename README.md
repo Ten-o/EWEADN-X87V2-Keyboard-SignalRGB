@@ -16,7 +16,7 @@
 
 ## 安装
 
-[![Add To SignalRGB](https://marketplace.signalrgb.com/resources/add-extension-256.png "Add to My SignalRGB Installation")](https://srgbmods.net/s?p=addon/install?url=https://github.com/Ten-o/EWEADN-X87V2-Keyboard-SignalRGB)
+[![Add To SignalRGB](https://marketplace.signalrgb.com/resources/add-extension-256.png "Add to My SignalRGB Installation")](signalrgb://addon/install?url=https://github.com/Ten-o/EWEADN-X87V2-Keyboard-SignalRGB)
 
 点击按钮，在弹出的窗口里确认即可。也可以按 `Win + R`，粘贴：
 
