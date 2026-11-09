@@ -18,6 +18,7 @@
 
 [![点击此处将此仓库添加到 SignalRGB](https://github.com/qiangqiang101/SignalRGB-Wallpaper-Engine/blob/main/addtosrgbgithub.png?raw=true)](https://go.signalrgb.com/app/addon/install?url=https://github.com/Ten-o/EWEADN-X87V2-Keyboard-SignalRGB) | 
 
+
 点击按钮，在弹出的窗口里确认即可。
 
 ## 设置
